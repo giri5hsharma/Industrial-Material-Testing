@@ -1,0 +1,32 @@
+{
+  "bottle": {
+    "checkpoint": "models/bottle/model.ckpt",
+    "threshold": 0.5068,
+    "tier": 1
+  },
+  "tile": {
+    "checkpoint": "models/tile/model.ckpt",
+    "threshold": 0.501,
+    "tier": 1
+  },
+  "leather": {
+    "checkpoint": "models/leather/model.ckpt",
+    "threshold": 0.51,
+    "tier": 1
+  },
+  "metal_nut": {
+    "checkpoint": "models/metal_nut/model.ckpt",
+    "threshold": 0.5225,
+    "tier": 1
+  },
+  "wood": {
+    "checkpoint": "models/wood/model.ckpt",
+    "threshold": 0.5347,
+    "tier": 2
+  },
+  "cable": {
+    "checkpoint": "models/cable/model.ckpt",
+    "threshold": 0.51,
+    "tier": 2
+  }
+}

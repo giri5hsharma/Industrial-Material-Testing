@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Industrial Defect Detection</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #1a1d24;
+    --panel-2: #22262f;
+    --border: #2e333d;
+    --text: #e8eaed;
+    --muted: #9aa0a8;
+    --green: #2ecc71;
+    --red: #e74c3c;
+    --amber: #f1c40f;
+    --accent: #4f8cff;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 32px 16px;
+  }
+  h1 { font-size: 1.5rem; margin-bottom: 4px; }
+  .subtitle { color: var(--muted); font-size: 0.9rem; margin-bottom: 24px; }
+
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+    width: 100%;
+    max-width: 860px;
+    margin-bottom: 20px;
+  }
+
+  /* Dropzone */
+  #dropzone {
+    border: 2px dashed var(--border);
+    border-radius: 10px;
+    background: var(--panel-2);
+    padding: 48px 20px;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  #dropzone:hover, #dropzone.dragover {
+    border-color: var(--accent);
+    background: #242a38;
+  }
+  #dropzone p { color: var(--muted); margin-top: 8px; font-size: 0.9rem; }
+  #dropzone .icon { font-size: 2rem; }
+  #fileInput { display: none; }
+
+  /* Category radios */
+  .category-label {
+    color: var(--muted);
+    font-size: 0.85rem;
+    margin-top: 18px;
+    margin-bottom: 8px;
+    display: block;
+  }
+  .radio-group {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  .radio-group input[type="radio"] {
+    display: none;
+  }
+  .radio-card {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px 16px;
+    min-width: 130px;
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .radio-card:hover {
+    border-color: var(--accent);
+  }
+  .radio-group input[type="radio"]:checked + .radio-card {
+    border-color: var(--accent);
+    background: #242a38;
+    box-shadow: 0 0 0 1px var(--accent);
+  }
+  .radio-card .name {
+    font-weight: 700;
+    color: var(--text);
+    font-size: 0.95rem;
+    text-transform: capitalize;
+  }
+  .radio-card .auroc {
+    font-size: 0.8rem;
+    color: var(--muted);
+  }
+  .radio-card .tier {
+    font-size: 0.65rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    align-self: flex-start;
+    margin-top: 2px;
+  }
+  .radio-card .tier.t1 {
+    background: rgba(46,204,113,0.15); color: var(--green); border: 1px solid var(--green);
+  }
+  .radio-card .tier.t2 {
+    background: rgba(241,196,15,0.15); color: var(--amber); border: 1px solid var(--amber);
+  }
+
+  .controls {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    margin-top: 16px;
+    flex-wrap: wrap;
+  }
+  button {
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    padding: 10px 22px;
+    font-size: 0.95rem;
+    cursor: pointer;
+    font-weight: 600;
+  }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  button.secondary { background: var(--panel-2); border: 1px solid var(--border); }
+  label { color: var(--muted); font-size: 0.85rem; }
+  input[type="number"] {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: 0.9rem;
+  }
+
+  .metrics-line {
+    color: var(--muted);
+    font-size: 0.82rem;
+    margin-top: 6px;
+    min-height: 1.2em;
+  }
+
+  /* Result */
+  #resultCard { display: none; }
+  .badge {
+    display: inline-block;
+    padding: 6px 18px;
+    border-radius: 999px;
+    font-weight: 700;
+    font-size: 1.05rem;
+    letter-spacing: 0.5px;
+  }
+  .badge.good { background: rgba(46,204,113,0.15); color: var(--green); border: 1px solid var(--green); }
+  .badge.bad  { background: rgba(231,76,60,0.15);  color: var(--red);   border: 1px solid var(--red); }
+
+  .meta { color: var(--muted); font-size: 0.85rem; margin-top: 10px; }
+
+  .images {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+    margin-top: 18px;
+  }
+  .images figure {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px;
+  }
+  .images img { width: 100%; border-radius: 6px; display: block; }
+  .images figcaption {
+    text-align: center;
+    color: var(--muted);
+    font-size: 0.8rem;
+    padding-top: 8px;
+  }
+
+  #spinner { display: none; color: var(--muted); margin-top: 14px; }
+  #error { display: none; color: var(--red); margin-top: 14px; font-size: 0.9rem; }
+
+  @media (max-width: 640px) {
+    .images { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<h1>Industrial Defect Detection</h1>
+<div class="subtitle">EfficientAD · multi-class anomaly detection · upload an image to inspect</div>
+
+<div class="card">
+  <div id="dropzone">
+    <div class="icon">📷</div>
+    <strong>Drop an image here</strong>
+    <p>or click to browse (png, jpg, bmp, webp)</p>
+  </div>
+  <input type="file" id="fileInput" accept="image/*" />
+
+  <span class="category-label">Select class</span>
+  <div class="radio-group" id="categoryRadios"></div>
+
+  <div class="metrics-line" id="metricsLine"></div>
+
+  <div class="controls">
+    <button id="detectBtn" disabled>Detect</button>
+    <button id="clearBtn" class="secondary" disabled>Clear</button>
+    <label>
+      Threshold
+      <input type="number" id="threshold" value="0.515" step="0.005" min="0" max="1" />
+    </label>
+  </div>
+
+  <div id="spinner">Running inference…</div>
+  <div id="error"></div>
+</div>
+
+<div class="card" id="resultCard">
+  <span id="badge" class="badge"></span>
+  <div class="meta" id="meta"></div>
+
+  <div class="images">
+    <figure>
+      <img id="origImg" alt="Uploaded image" />
+      <figcaption>Original</figcaption>
+    </figure>
+    <figure>
+      <img id="heatImg" alt="Anomaly heatmap" />
+      <figcaption>Anomaly heatmap</figcaption>
+    </figure>
+  </div>
+</div>
+
+<script>
+  const dropzone      = document.getElementById("dropzone");
+  const fileInput     = document.getElementById("fileInput");
+  const detectBtn     = document.getElementById("detectBtn");
+  const clearBtn      = document.getElementById("clearBtn");
+  const categoryRadios= document.getElementById("categoryRadios");
+  const metricsLine   = document.getElementById("metricsLine");
+  const thresholdIn   = document.getElementById("threshold");
+  const spinner       = document.getElementById("spinner");
+  const errorBox      = document.getElementById("error");
+  const resultCard    = document.getElementById("resultCard");
+  const badge         = document.getElementById("badge");
+  const meta          = document.getElementById("meta");
+  const origImg       = document.getElementById("origImg");
+  const heatImg       = document.getElementById("heatImg");
+
+  let selectedFile = null;
+  let categories = [];
+
+  function getSelectedCategory() {
+    const checked = document.querySelector('input[name="category"]:checked');
+    return checked ? checked.value : null;
+  }
+
+  async function loadCategories() {
+    try {
+      const response = await fetch("/categories");
+      if (!response.ok) throw new Error("Could not load categories.");
+      const data = await response.json();
+      categories = data.categories || [];
+
+      categoryRadios.innerHTML = "";
+
+      categories.forEach((cat, index) => {
+        const id = `cat-${cat.name}`;
+        const auroc = cat.metrics.image_AUROC !== undefined
+          ? cat.metrics.image_AUROC.toFixed(3)
+          : "n/a";
+        const tierClass = cat.tier === 1 ? "t1" : "t2";
+        const tierText  = cat.tier === 1 ? "production-grade" : "experimental";
+
+        const wrapper = document.createElement("label");
+        wrapper.htmlFor = id;
+
+        const input = document.createElement("input");
+        input.type = "radio";
+        input.name = "category";
+        input.value = cat.name;
+        input.id = id;
+        if (index === 0) input.checked = true;
+
+        const card = document.createElement("div");
+        card.className = "radio-card";
+        card.innerHTML = `
+          <span class="name">${cat.name}</span>
+          <span class="auroc">AUROC ${auroc}</span>
+          <span class="tier ${tierClass}">${tierText}</span>
+        `;
+
+        input.addEventListener("change", updateCategoryInfo);
+
+        wrapper.appendChild(input);
+        wrapper.appendChild(card);
+        categoryRadios.appendChild(wrapper);
+      });
+
+      if (categories.length) {
+        updateCategoryInfo();
+      }
+    } catch (err) {
+      errorBox.textContent = err.message;
+      errorBox.style.display = "block";
+    }
+  }
+
+  function clearResult() {
+    badge.style.display = "none";
+    meta.textContent = "";
+    heatImg.src = "";
+    resultCard.style.display = selectedFile ? "block" : "none";
+  }
+
+  function updateCategoryInfo() {
+    const name = getSelectedCategory();
+    const cat = categories.find(c => c.name === name);
+    if (!cat) return;
+
+    thresholdIn.value = cat.threshold;
+
+    const m = cat.metrics || {};
+    metricsLine.textContent =
+      `image_AUROC: ${m.image_AUROC?.toFixed(3) ?? "n/a"} · ` +
+      `image_F1: ${m.image_F1Score?.toFixed(3) ?? "n/a"} · ` +
+      `threshold: ${cat.threshold}`;
+
+    clearResult();
+  }
+
+  dropzone.addEventListener("click", () => fileInput.click());
+
+  dropzone.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    dropzone.classList.add("dragover");
+  });
+
+  dropzone.addEventListener("dragleave", () => {
+    dropzone.classList.remove("dragover");
+  });
+
+  dropzone.addEventListener("drop", (e) => {
+    e.preventDefault();
+    dropzone.classList.remove("dragover");
+    if (e.dataTransfer.files.length) {
+      setFile(e.dataTransfer.files[0]);
+    }
+  });
+
+  fileInput.addEventListener("change", () => {
+    if (fileInput.files.length) {
+      setFile(fileInput.files[0]);
+    }
+  });
+
+  function setFile(file) {
+    selectedFile = file;
+    detectBtn.disabled = false;
+    clearBtn.disabled = false;
+    errorBox.style.display = "none";
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      origImg.src = e.target.result;
+      resultCard.style.display = "block";
+      badge.style.display = "none";
+      meta.textContent = "";
+      heatImg.src = "";
+    };
+    reader.readAsDataURL(file);
+  }
+
+  clearBtn.addEventListener("click", () => {
+    selectedFile = null;
+    fileInput.value = "";
+    detectBtn.disabled = true;
+    clearBtn.disabled = true;
+    resultCard.style.display = "none";
+    errorBox.style.display = "none";
+    heatImg.src = "";
+  });
+
+  detectBtn.addEventListener("click", async () => {
+    if (!selectedFile) return;
+
+    const category = getSelectedCategory();
+    if (!category) {
+      errorBox.textContent = "Please select a class.";
+      errorBox.style.display = "block";
+      return;
+    }
+
+    spinner.style.display = "block";
+    errorBox.style.display = "none";
+    detectBtn.disabled = true;
+
+    const formData = new FormData();
+    formData.append("file", selectedFile);
+    formData.append("category", category);
+    formData.append("threshold", thresholdIn.value);
+
+    try {
+      const response = await fetch("/predict", {
+        method: "POST",
+        body: formData,
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || "Prediction failed.");
+      }
+
+      resultCard.style.display = "block";
+      badge.style.display = "inline-block";
+
+      if (data.is_defect) {
+        badge.textContent = "❌ DEFECT";
+        badge.className = "badge bad";
+      } else {
+        badge.textContent = "✅ GOOD";
+        badge.className = "badge good";
+      }
+
+      meta.textContent =
+        `${data.category} · score: ${data.score} · threshold: ${data.threshold}`;
+
+      heatImg.src = "data:image/png;base64," + data.heatmap;
+    } catch (err) {
+      errorBox.textContent = err.message;
+      errorBox.style.display = "block";
+    } finally {
+      spinner.style.display = "none";
+      detectBtn.disabled = false;
+    }
+  });
+
+  window.addEventListener("DOMContentLoaded", loadCategories);
+</script>
+
+</body>
+</html>

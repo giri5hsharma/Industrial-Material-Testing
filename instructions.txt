@@ -1,0 +1,174 @@
+INSTRUCTIONS — Multi-Class Defect Detection: Keep Only Good Models
+====================================================================
+
+Goal
+----
+Serve only the well-trained EfficientAD models through the Flask web app.
+Selection is driven by metrics/*.json. Primary metric: image_AUROC
+(it measures how well the model separates GOOD from DEFECT images).
+Secondary: image_F1Score, pixel_AUROC (heatmap quality).
+
+Model selection (from metrics/*.json)
+--------------------------------------
+KEEP tier-1 (image_AUROC >= 0.95):
+  bottle      image_AUROC=1.000  image_F1=0.992
+  tile        image_AUROC=0.999  image_F1=0.982
+  leather     image_AUROC=0.990  image_F1=0.968
+  metal_nut   image_AUROC=0.973  image_F1=0.957
+
+KEEP tier-2 (0.90 <= image_AUROC < 0.95, usable, label "experimental"):
+  wood        image_AUROC=0.949  image_F1=0.934
+  cable       image_AUROC=0.928  image_F1=0.863
+
+DROP (image_AUROC < 0.90, unreliable verdicts):
+  screw       image_AUROC=0.862  (EfficientAD weak on screw at 20 epochs)
+  transistor  image_AUROC=0.778  image_F1=0.667 (worst F1)
+  capsule     image_AUROC=0.688  (F1 0.911 is a fixed-threshold artifact;
+                                  scores barely rank good vs defect)
+
+Step 1 — Remove dropped models
+------------------------------
+  rm -rf models/screw models/transistor models/capsule
+  mkdir -p metrics/dropped
+  mv metrics/screw.json metrics/transistor.json metrics/capsule.json \
+     metrics/dropped/
+
+  (Keeps metrics archived for later retraining comparison.
+   Frees ~216 MB of checkpoints.)
+
+Step 2 — Create model registry
+------------------------------
+Create models/registry.json. One entry per kept class:
+
+  {
+    "bottle":    {"checkpoint": "models/bottle/model.ckpt",
+                  "threshold": null, "tier": 1},
+    "tile":      {"checkpoint": "models/tile/model.ckpt",
+                  "threshold": null, "tier": 1},
+    "leather":   {"checkpoint": "models/leather/model.ckpt",
+                  "threshold": null, "tier": 1},
+    "metal_nut": {"checkpoint": "models/metal_nut/model.ckpt",
+                  "threshold": null, "tier": 1},
+    "wood":      {"checkpoint": "models/wood/model.ckpt",
+                  "threshold": null, "tier": 2},
+    "cable":     {"checkpoint": "models/cable/model.ckpt",
+                  "threshold": null, "tier": 2}
+  }
+
+threshold=null is filled in by Step 3.
+
+Step 3 — Calibrate per-class thresholds
+---------------------------------------
+Write src/calibrate_thresholds.py:
+  - For each kept class:
+      load models/<class>/model.ckpt on best device (mps > cuda > cpu)
+      score every image in datasets/MVTecAD/<class>/test/good/
+      score every image in all defect folders of that class
+      threshold = good_max + 0.4 * (defect_median - good_max)
+      (falls back to good_max + 0.01 if distributions overlap,
+       e.g. metal_nut faint scratches — same limit found earlier)
+  - Write each threshold into models/registry.json.
+  - Print a per-class separation report (good max vs defect min).
+
+Run:
+  PYTORCH_ENABLE_MPS_FALLBACK=1 python src/calibrate_thresholds.py
+
+Step 4 — Refactor src/app.py to multi-model (backend integration)
+-----------------------------------------------------------------
+  - Remove hardcoded CHECKPOINT_PATH / DEFAULT_THRESHOLD constants.
+  - Load models/registry.json at startup into REGISTRY dict.
+    Fail fast (raise) if registry missing or a checkpoint path
+    in it does not exist.
+  - Add lazy model cache:
+      MODELS = {}  # category -> (model, resize, device)
+      def get_model(category):
+          if category not in MODELS:
+              load EfficientAd from REGISTRY[category]["checkpoint"]
+              on best device, eval mode, build Resize transform
+          return MODELS[category]
+    (First request per class pays load cost; rest are fast.
+     Do NOT eager-load all 6 models = 450 MB in memory.)
+  - GET /categories -> JSON:
+      { "categories": [
+          { "name": "bottle", "tier": 1, "threshold": 0.512,
+            "metrics": {"image_AUROC": 1.0, "image_F1Score": 0.992} },
+          ... ] }
+    Merge registry entry + metrics/<class>.json per class.
+  - POST /predict -> form fields: file (image), category (required),
+                     threshold (optional override).
+      400 if category missing, unknown, or not in registry
+      (dropped classes like screw must be rejected here).
+      Default threshold = REGISTRY[category]["threshold"].
+      Response gains "category" and "tier" fields.
+  - Heatmap logic unchanged.
+
+Step 5 — Update UI (src/templates/index.html) (frontend integration)
+--------------------------------------------------------------------
+  Page-load flow:
+    1. window load -> fetch("/categories").
+    2. Populate <select id="category"> with one <option> per class.
+       Option label: "<name> (AUROC <image_AUROC>)".
+    3. Store full categories payload in a JS variable for lookup.
+    4. Trigger change handler once so first class is selected.
+
+  Dropdown + controls:
+    - Place <select> in the .controls row, before the Detect button.
+    - On category change:
+        a. set threshold input value = selected class threshold
+        b. update tier badge text/color:
+             tier 1 -> "production-grade" (green)
+             tier 2 -> "experimental" (amber)
+        c. show metrics line under dropdown:
+             "image_AUROC: x.xxx · image_F1: x.xxx"
+    - Clear previous result/heatmap on category change
+      (stale verdict for wrong class must not linger).
+
+  Predict flow:
+    - Detect click -> FormData with file, category (select value),
+      threshold (input value) -> POST /predict.
+    - On success: verdict badge, score line shows
+      "score · threshold · category", heatmap img from base64.
+    - On 400/500: show server "error" message in #error box
+      (e.g. unknown category).
+    - Keep existing spinner / disable-button behavior.
+
+Step 6 — Verify (end-to-end)
+----------------------------
+  PYTORCH_ENABLE_MPS_FALLBACK=1 python src/app.py
+
+  For every kept class, test one good and one defect image:
+    curl -X POST -F "file=@datasets/MVTecAD/<class>/test/good/000.png" \
+         -F "category=<class>" http://127.0.0.1:5000/predict
+    curl -X POST -F "file=@datasets/MVTecAD/<class>/test/<defect>/000.png" \
+         -F "category=<class>" http://127.0.0.1:5000/predict
+
+  Expected: good -> NORMAL, defect -> DEFECT.
+  Known exception: metal_nut faint scratches may read NORMAL
+  (documented model limit).
+
+  Also verify:
+    curl http://127.0.0.1:5000/categories   (lists exactly 6 classes)
+    curl -X POST -F "file=@x.png" -F "category=screw" .../predict
+      -> 400 error (dropped class rejected)
+
+  Browser check:
+    open http://127.0.0.1:5000
+    - dropdown shows 6 classes with AUROC labels
+    - switching category updates threshold + tier badge + metrics
+    - upload image per class -> verdict + heatmap render
+    - switching category after a result clears the old verdict
+
+Step 7 — Update README.md
+-------------------------
+  - Section 12: document multi-class support, /categories endpoint,
+    category field in /predict, tier system.
+  - Add model table with metrics and keep/drop rationale.
+  - Note dropped classes can be retrained with more epochs via:
+      python src/train_all.py --category screw --epochs 40 --force
+
+Constraints
+-----------
+  - Do NOT retrain anything in this task. Selection only.
+  - Do NOT delete metrics/dropped/ (needed for retraining baseline).
+  - realtime.py stays metal_nut-only; multi-class webcam support is
+    out of scope for this plan.
