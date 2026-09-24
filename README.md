@@ -82,20 +82,38 @@ You need:
 
 Git LFS is recommended for the `.ckpt` model files because model checkpoints are binary files and may be too large for normal Git.
 
-## 1. Clone the repository
+## 1. Install Git LFS (BEFORE cloning)
 
-```bash
-git clone https://github.com/giri5hsharma/Industrial-Material-Testing.git
-cd industrial-defect-detection
-```
-
-## 2. Install Git LFS
+The model checkpoints (~432 MB total) are stored with Git LFS.
+Install LFS **before** cloning, otherwise you get small pointer files
+instead of the real checkpoints and the app will fail to load them.
 
 On macOS with Homebrew:
 
 ```bash
 brew install git-lfs
 git lfs install
+```
+
+## 2. Clone the repository
+
+```bash
+git clone https://github.com/giri5hsharma/Industrial-Material-Testing.git
+cd Industrial-Material-Testing
+```
+
+Verify the checkpoints downloaded correctly — each should be ~72 MB:
+
+```bash
+ls -lh models/*/model.ckpt
+```
+
+If you already cloned without Git LFS and see ~130-byte files instead,
+recover with:
+
+```bash
+git lfs install
+git lfs pull
 ```
 
 ## 3. Create the Python environment
@@ -139,6 +157,10 @@ MPS available: True
 ## 5. Download MVTec AD
 
 The dataset is intentionally not stored in Git.
+
+**Not needed to run the web app** — the trained checkpoints in `models/`
+are enough. Download the dataset only if you want to retrain, evaluate,
+or recalibrate thresholds.
 
 Run:
 
