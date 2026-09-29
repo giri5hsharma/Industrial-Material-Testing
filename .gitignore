@@ -28,12 +28,6 @@ results/
 # Captured webcam images / local inspection samples
 captured/
 
-# Legacy webcam scripts + superseded trainer (local backup only, not in repo)
-src/realtime.py
-src/capture.py
-src/camera_test.py
-src/train.py
-
 # Jupyter
 .ipynb_checkpoints/
 

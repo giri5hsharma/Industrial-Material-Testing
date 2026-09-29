@@ -6,7 +6,11 @@ The project supports:
 
 - **Web app (primary): upload an image, pick an MVTec class, and get a GOOD / DEFECT verdict with an anomaly heatmap**
 - Training EfficientAD on any MVTec AD category
-- Running inference on a single image from the CLI
+- Running inference on a single image
+- Legacy real-time webcam anomaly detection (kept as backup):
+  - ROI-based inspection
+  - Camera-specific calibration using a known-good object
+  - Temporal filtering to reduce false positives
 
 > **Current demo models:** trained EfficientAD checkpoints for the MVTec AD categories selected below.
 
@@ -22,8 +26,12 @@ industrial-defect-detection/
 │   ├── calibrate_thresholds.py
 │   ├── download_dataset.py
 │   ├── evaluate.py
+│   ├── train.py
 │   ├── train_all.py
-│   └── predict_image.py
+│   ├── predict_image.py
+│   ├── capture.py              # LEGACY: webcam frame capture
+│   ├── camera_test.py          # LEGACY: webcam permission test
+│   └── realtime.py             # LEGACY: real-time webcam detection
 │
 ├── models/
 │   ├── registry.json           # per-class checkpoint + threshold
@@ -70,6 +78,7 @@ You need:
 - Python 3.11
 - Git
 - Git LFS
+- A webcam (only for the legacy real-time scripts)
 
 Git LFS is recommended for the `.ckpt` model files because model checkpoints are binary files and may be too large for normal Git.
 
@@ -365,6 +374,92 @@ python src/calibrate_thresholds.py
 
 and update `models/registry.json` if you want to add, drop, or re-tier
 classes.
+
+## 12. Legacy: real-time webcam detection (backup)
+
+> **Legacy.** These scripts predate the upload-based web app and are
+> kept as a backup for physical-inspection demos. They are not used by
+> the web app and are no longer actively maintained. The webcam scripts
+> are also hardcoded to the old single `metal_nut` workflow.
+
+### Test the webcam
+
+Before running anomaly detection, verify camera access:
+
+```bash
+python src/camera_test.py
+```
+
+macOS may ask for camera permission. If necessary, enable camera access under:
+
+```text
+System Settings
+→ Privacy & Security
+→ Camera
+```
+
+### Real-time detection
+
+```bash
+PYTORCH_ENABLE_MPS_FALLBACK=1 python src/realtime.py \
+  --checkpoint "./models/metal_nut/model.ckpt" \
+  --skip 2
+```
+
+#### Controls
+
+| Key | Action |
+|---|---|
+| `D` | Toggle anomaly detection ON/OFF |
+| `C` | Calibrate with a known-good object |
+| `S` | Save the current camera frame |
+| `Q` | Quit |
+
+#### Recommended workflow
+
+1. Start the application.
+2. Press `D` to enable detection.
+3. Place a known-good metal nut inside the green inspection ROI.
+4. Press `C`.
+5. Keep the object and camera stable during calibration.
+6. After calibration, test good and defective samples.
+
+The calibration step measures the anomaly-score distribution produced by the actual camera/setup and creates a local detection threshold.
+
+The real-time application also requires multiple anomalous frames before declaring a defect, reducing one-frame false positives.
+
+### Changing the inspection area
+
+The real-time script contains the ROI settings:
+
+```python
+ROI_X = 170
+ROI_Y = 70
+ROI_W = 300
+ROI_H = 300
+```
+
+Adjust these values to place the green inspection region around the object.
+
+Only this ROI is sent to EfficientAD.
+
+### Performance
+
+For higher camera/display FPS, the application supports frame skipping:
+
+```bash
+--skip 2
+```
+
+means inference is performed on every second frame.
+
+For a lighter inference load:
+
+```bash
+--skip 3
+```
+
+The camera stream remains live while inference runs less frequently.
 
 ## License
 
