@@ -5,7 +5,7 @@ from anomalib.engine import Engine
 from anomalib.models import EfficientAd
 
 
-MODEL_PATH = "results/EfficientAd/MVTecAD/metal_nut/v0/weights/lightning/model.ckpt"
+MODEL_PATH = "models/metal_nut/model.ckpt"
 IMAGE_PATH = "datasets/MVTecAD/metal_nut/test/good/000.png"
 
 
