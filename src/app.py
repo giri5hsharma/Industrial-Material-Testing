@@ -130,15 +130,34 @@ def predict(category: str, image_bgr):
     return score, anomaly_map
 
 
-def make_heatmap_overlay(image_bgr, anomaly_map, alpha=0.4):
-    """Blend JET heatmap over the original image. Return BGR image."""
-    clipped = np.clip(anomaly_map, 0.0, 1.0)
-    heatmap = (clipped * 255).astype(np.uint8)
-    heatmap = cv2.resize(
-        heatmap,
+def make_heatmap_overlay(image_bgr, anomaly_map, alpha=0.55):
+    """Blend a contrast-enhanced JET heatmap over the original image."""
+    anomaly_map = np.asarray(anomaly_map, dtype=np.float32)
+    anomaly_map = cv2.resize(
+        anomaly_map,
         (image_bgr.shape[1], image_bgr.shape[0]),
         interpolation=cv2.INTER_LINEAR,
     )
+    finite_values = anomaly_map[np.isfinite(anomaly_map)]
+
+    if finite_values.size == 0:
+        return image_bgr.copy()
+
+    lower = np.percentile(finite_values, 1)
+    upper = np.percentile(finite_values, 99)
+
+    if upper <= lower:
+        lower = float(finite_values.min())
+        upper = float(finite_values.max())
+
+    if upper > lower:
+        normalized = (anomaly_map - lower) / (upper - lower)
+    else:
+        normalized = np.zeros_like(anomaly_map)
+
+    normalized = np.nan_to_num(normalized, nan=0.0, posinf=1.0, neginf=0.0)
+    clipped = np.clip(normalized, 0.0, 1.0)
+    heatmap = (clipped * 255).astype(np.uint8)
     heatmap_color = cv2.applyColorMap(heatmap, cv2.COLORMAP_JET)
     return cv2.addWeighted(image_bgr, 1.0 - alpha, heatmap_color, alpha, 0)
 

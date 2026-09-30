@@ -2,5 +2,6 @@
     "image_AUROC": 0.9731183052062988,
     "image_F1Score": 0.9569892287254333,
     "pixel_AUROC": 0.9482507109642029,
-    "pixel_F1Score": 0.7677366733551025
+    "pixel_F1Score": 0.7677366733551025,
+    "inference_time_seconds": 8.3974
 }

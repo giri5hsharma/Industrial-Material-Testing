@@ -1,5 +1,6 @@
 import argparse
 import json
+import time
 from pathlib import Path
 
 import torch
@@ -256,11 +257,15 @@ def evaluate_model(
 
     print()
 
+    inference_started = time.perf_counter()
+
     test_results = engine.test(
         model=model,
         datamodule=datamodule,
         ckpt_path=None,
     )
+
+    inference_time_seconds = time.perf_counter() - inference_started
 
     # --------------------------------------------------------
     # Extract metrics
@@ -268,6 +273,10 @@ def evaluate_model(
 
     metrics = extract_metrics(
         test_results
+    )
+    metrics["inference_time_seconds"] = round(
+        inference_time_seconds,
+        4,
     )
 
     # --------------------------------------------------------

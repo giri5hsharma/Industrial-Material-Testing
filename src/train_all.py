@@ -2,6 +2,7 @@ import argparse
 import gc
 import json
 import shutil
+import time
 from pathlib import Path
 
 import torch
@@ -267,20 +268,13 @@ def train_category(
     # Model
     # --------------------------------------------------------
 
-    model = EfficientAd(
-        model_size="small",
-        lr=1e-4,
-    )
+    model = EfficientAd(model_size="small", lr=1e-4,)
 
     # --------------------------------------------------------
     # Engine
     # --------------------------------------------------------
 
-    engine = Engine(
-        max_epochs=epochs,
-        accelerator=device,
-        devices=1,
-    )
+    engine = Engine(max_epochs=epochs,accelerator=device,devices=1,)
 
     # --------------------------------------------------------
     # TRAIN
@@ -301,10 +295,7 @@ def train_category(
 
     print()
 
-    engine.fit(
-        model=model,
-        datamodule=datamodule,
-    )
+    engine.fit(model=model,datamodule=datamodule,)
 
     # --------------------------------------------------------
     # FIND BEST CHECKPOINT
@@ -351,6 +342,8 @@ def train_category(
 
     if best_checkpoint is not None:
 
+        inference_started = time.perf_counter()
+
         test_results = engine.test(
             model=model,
             datamodule=datamodule,
@@ -361,11 +354,15 @@ def train_category(
 
     else:
 
+        inference_started = time.perf_counter()
+
         test_results = engine.test(
             model=model,
             datamodule=datamodule,
             ckpt_path=None,
         )
+
+    inference_time_seconds = time.perf_counter() - inference_started
 
     # --------------------------------------------------------
     # Extract metrics
@@ -373,6 +370,10 @@ def train_category(
 
     metrics = extract_metrics(
         test_results
+    )
+    metrics["inference_time_seconds"] = round(
+        inference_time_seconds,
+        4,
     )
 
     # --------------------------------------------------------
