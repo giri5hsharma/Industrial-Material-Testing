@@ -1,132 +1,883 @@
 # Industrial Material Defect Detection
 
-Industrial material defect detection using **EfficientAD**, **Anomalib**, **MVTec AD**, and **OpenCV**.
+An industrial anomaly detection system built using **EfficientAD**, **Anomalib**, **PyTorch**, **MVTec AD**, and **OpenCV**.
 
-The project supports:
+The project detects defects in industrial materials using a combination of:
 
-- **Web app (primary): upload an image, pick an MVTec class, and get a GOOD / DEFECT verdict with an anomaly heatmap**
-- Training EfficientAD on any MVTec AD category
-- Running inference on a single image
-- Legacy real-time webcam anomaly detection (kept as backup):
-  - ROI-based inspection
-  - Camera-specific calibration using a known-good object
-  - Temporal filtering to reduce false positives
+- **Global anomaly detection** using an autoencoding/reconstruction branch
+- **Local anomaly detection** using a Teacher–Student feature-distillation branch
+- **Image-level anomaly scoring** for GOOD / DEFECT classification
+- **Pixel-level anomaly maps** for localizing defective regions
+- **AUROC and F1-score** for quantitative evaluation
+- A **Flask web application** for image-based inspection and visualization
 
-> **Current demo models:** trained EfficientAD checkpoints for the MVTec AD categories selected below.
+The primary interface allows a user to upload an image, select the material category, and receive:
 
-## Project structure
+1. A **GOOD / DEFECT** prediction
+2. An **anomaly score**
+3. A **calibrated decision threshold**
+4. An **anomaly heatmap** showing suspicious regions
+
+---
+
+# 1. Project Overview
+
+Traditional supervised defect detection requires images containing every possible type of defect.
+
+Industrial anomaly detection approaches the problem differently.
+
+Instead of explicitly learning every defect class, the model is primarily trained using **defect-free (GOOD) samples** and learns what a normal object looks like.
+
+During inference, an input image is compared against the learned representation of normality.
+
+If the input differs significantly from what the model considers normal, a high anomaly score is produced.
+
+The project uses **EfficientAD**, an efficient industrial anomaly detection architecture designed for fast detection while maintaining good anomaly localization performance.
+
+---
+
+# 2. High-Level Architecture
+
+The system can be viewed as two complementary anomaly detection mechanisms:
+
+```text
+                         Input Image
+                              │
+                              ▼
+                    ┌───────────────────┐
+                    │ Image Preprocess  │
+                    └─────────┬─────────┘
+                              │
+               ┌──────────────┴──────────────┐
+               │                             │
+               ▼                             ▼
+      ┌──────────────────┐          ┌─────────────────────┐
+      │ Local Anomaly    │          │ Global Anomaly      │
+      │ Detection        │          │ Detection            │
+      │                  │          │                     │
+      │ Teacher-Student  │          │ Autoencoder /       │
+      │ Feature          │          │ Reconstruction      │
+      │ Distillation     │          │ Branch              │
+      └────────┬─────────┘          └──────────┬──────────┘
+               │                               │
+               ▼                               ▼
+       Feature Difference              Reconstruction
+          / Distillation                  Difference
+               │                               │
+               └──────────────┬────────────────┘
+                              │
+                              ▼
+                    ┌───────────────────┐
+                    │ Anomaly Map /     │
+                    │ Anomaly Score     │
+                    └─────────┬─────────┘
+                              │
+                ┌─────────────┴──────────────┐
+                │                            │
+                ▼                            ▼
+        Image-level result            Pixel-level result
+        GOOD / DEFECT                 Defect localization
+                │                            │
+                └─────────────┬──────────────┘
+                              ▼
+                     Web Application
+```
+
+The two branches capture different kinds of anomalies.
+
+### Local anomalies
+
+The **Teacher–Student branch** focuses on differences in learned feature representations.
+
+It is particularly useful for localized defects such as:
+
+- scratches
+- dents
+- small surface irregularities
+- missing components
+- local texture changes
+
+### Global anomalies
+
+The **autoencoding/reconstruction branch** captures larger-scale differences between the input and the learned normal representation.
+
+It can help identify:
+
+- structural differences
+- unusual shapes
+- large damaged regions
+- global appearance changes
+
+The final anomaly representation combines information from these mechanisms.
+
+---
+
+# 3. EfficientAD
+
+EfficientAD is designed specifically for industrial anomaly detection.
+
+The important idea is that the model does not need to learn a separate supervised classifier for every possible defect.
+
+Instead, it learns the distribution of **normal industrial images**.
+
+Conceptually:
+
+```text
+GOOD training images
+        │
+        ▼
+Learn representation of normality
+        │
+        ▼
+Compare new image against normal representation
+        │
+        ▼
+Large difference → likely anomaly
+Small difference → likely normal
+```
+
+This makes the approach particularly useful in industrial environments where:
+
+- defects are rare
+- new defect types may appear
+- collecting defective samples is difficult
+- defect appearance is unpredictable
+
+---
+
+# 4. Teacher–Student Local Anomaly Detection
+
+One component of EfficientAD uses a **Teacher–Student architecture**.
+
+The Teacher network provides a learned feature representation of the input.
+
+The Student network attempts to reproduce the Teacher's representation.
+
+During training, the Student learns to match the Teacher on **normal images**.
+
+Conceptually:
+
+```text
+                    Normal Image
+                         │
+              ┌──────────┴──────────┐
+              │                     │
+              ▼                     ▼
+          Teacher                Student
+              │                     │
+              ▼                     ▼
+       Teacher Features       Student Features
+              │                     │
+              └──────────┬──────────┘
+                         ▼
+                  Feature Difference
+```
+
+For normal images:
+
+```text
+Teacher feature ≈ Student feature
+        ↓
+small difference
+        ↓
+low anomaly score
+```
+
+For an anomalous region:
+
+```text
+Teacher feature ≠ Student feature
+        ↓
+large feature difference
+        ↓
+high anomaly score
+```
+
+This difference can be calculated spatially, producing an **anomaly map** rather than only one score for the entire image.
+
+This is why the Teacher–Student branch is useful for **local anomaly detection**.
+
+---
+
+# 5. Global Anomaly Detection
+
+The second major component uses an **autoencoding/reconstruction mechanism**.
+
+The basic idea is:
+
+```text
+Input Image
+     │
+     ▼
+  Encoder
+     │
+     ▼
+Latent Representation
+     │
+     ▼
+  Decoder
+     │
+     ▼
+Reconstructed Image
+```
+
+The encoder compresses the image into a latent representation.
+
+The decoder attempts to reconstruct the original image.
+
+For a normal image:
+
+```text
+Original ≈ Reconstruction
+```
+
+Therefore:
+
+```text
+Reconstruction Error ≈ small
+```
+
+For an image containing an anomaly:
+
+```text
+Original ≠ Reconstruction
+```
+
+Therefore:
+
+```text
+Reconstruction Error ↑
+```
+
+The reconstruction difference provides information about regions that do not match the learned normal appearance.
+
+This gives the system a second source of anomaly information that complements the Teacher–Student branch.
+
+---
+
+# 6. Combining Local and Global Information
+
+The final anomaly representation is not based on a single measurement.
+
+The system uses information from both:
+
+```text
+Teacher–Student feature difference
+             +
+Autoencoder / reconstruction difference
+             │
+             ▼
+       Anomaly representation
+             │
+             ▼
+      Image anomaly score
+             +
+       Pixel anomaly map
+```
+
+This distinction is important:
+
+### Image-level anomaly detection
+
+Answers:
+
+> **"Is this image anomalous?"**
+
+The anomaly information is aggregated into an overall image-level score.
+
+That score is then compared against a calibrated threshold:
+
+```text
+score > threshold
+        │
+        ▼
+      DEFECT
+```
+
+while:
+
+```text
+score ≤ threshold
+        │
+        ▼
+       GOOD
+```
+
+### Pixel-level anomaly detection
+
+Answers:
+
+> **"Where is the anomaly?"**
+
+Instead of reducing the entire image to one value, the model retains spatial anomaly information.
+
+This produces an anomaly map:
+
+```text
+Input image
+     │
+     ▼
+Anomaly Map
+     │
+     ▼
+Heatmap Overlay
+```
+
+High-intensity regions represent areas considered more anomalous.
+
+---
+
+# 7. Training Strategy
+
+The MVTec AD dataset is used for training and evaluation.
+
+The important property of the dataset is that the training set primarily contains **GOOD samples**.
+
+Example:
+
+```text
+metal_nut/
+├── train/
+│   └── good/
+│       ├── 000.png
+│       ├── 001.png
+│       └── ...
+│
+└── test/
+    ├── good/
+    ├── bent/
+    ├── color/
+    ├── flip/
+    ├── scratch/
+    └── ...
+```
+
+The model therefore learns:
+
+> "This is what a normal metal nut looks like."
+
+Rather than:
+
+> "Here are all the possible defects."
+
+This is the core difference between anomaly detection and conventional supervised classification.
+
+---
+
+# 8. MVTec AD Categories
+
+The project was evaluated across multiple MVTec AD categories.
+
+The categories include:
+
+```text
+bottle
+cable
+capsule
+leather
+metal_nut
+screw
+tile
+transistor
+wood
+```
+
+Each category is treated as a separate anomaly detection problem.
+
+For example:
+
+```text
+metal_nut model
+      ↓
+learns normal metal nuts
+
+wood model
+      ↓
+learns normal wood samples
+
+bottle model
+      ↓
+learns normal bottles
+```
+
+A model trained for one category should therefore not be expected to work reliably on a completely different category.
+
+---
+
+# 9. Model Evaluation
+
+Two major evaluation levels are considered.
+
+## Image-level evaluation
+
+The model produces one anomaly score for an entire image.
+
+This is used for the final:
+
+```text
+GOOD / DEFECT
+```
+
+decision.
+
+Important metrics include:
+
+- **Image AUROC**
+- **Image F1-score**
+- Precision
+- Recall
+
+---
+
+## Pixel-level evaluation
+
+The model can also produce spatial anomaly information.
+
+This is useful for determining whether the model correctly identifies the location of a defect.
+
+Pixel-level metrics can include:
+
+- Pixel AUROC
+- Pixel F1-score
+- Pixel-level precision
+- Pixel-level recall
+- segmentation/localization metrics where applicable
+
+Therefore, the project evaluates both:
+
+```text
+                    Model
+                      │
+             ┌────────┴────────┐
+             │                 │
+             ▼                 ▼
+       Image-level         Pixel-level
+        detection          localization
+             │                 │
+             ▼                 ▼
+      GOOD / DEFECT       Where is defect?
+```
+
+---
+
+# 10. Why AUROC?
+
+The project uses **AUROC (Area Under the Receiver Operating Characteristic Curve)** as an important evaluation metric.
+
+AUROC measures how well the model ranks anomalous samples above normal samples across different decision thresholds.
+
+Conceptually:
+
+```text
+                 High AUROC
+                     │
+                     ▼
+        Good separation between
+        GOOD and DEFECT samples
+```
+
+An AUROC close to:
+
+```text
+1.0 → excellent separation
+0.5 → approximately random
+```
+
+AUROC is especially useful for anomaly detection because the anomaly threshold can be changed after training.
+
+For example, instead of evaluating only:
+
+```text
+threshold = 0.5
+```
+
+AUROC evaluates model discrimination across a range of thresholds.
+
+This makes AUROC a useful metric to examine before selecting the operational threshold.
+
+---
+
+# 11. F1-Score
+
+F1-score combines:
+
+- Precision
+- Recall
+
+using their harmonic mean:
+
+```text
+             Precision × Recall
+F1 = 2 × -----------------------------
+             Precision + Recall
+```
+
+F1 is useful when both false positives and false negatives matter.
+
+However, unlike AUROC, F1 depends directly on the selected classification threshold.
+
+Therefore:
+
+```text
+AUROC
+   ↓
+Measures ranking/separation capability
+
+F1
+   ↓
+Measures classification performance
+at a particular threshold
+```
+
+Both metrics are useful, but they answer different questions.
+
+---
+
+# 12. Experimental Results
+
+The following image-level results were obtained from the trained models:
+
+| Category | Image AUROC | Image F1 | Status |
+|---|---:|---:|---|
+| bottle | 1.000 | 0.992 | Tier 1 |
+| tile | 0.999 | 0.982 | Tier 1 |
+| leather | 0.990 | 0.968 | Tier 1 |
+| metal_nut | 0.973 | 0.957 | Tier 1 |
+| wood | 0.949 | 0.934 | Tier 2 |
+| cable | 0.928 | 0.863 | Tier 2 |
+| screw | 0.862 | 0.877 | Not selected |
+| transistor | 0.778 | 0.667 | Not selected |
+| capsule | 0.688 | 0.911 | Not selected |
+
+### Model selection
+
+The primary selection metric is **image AUROC**, since the main application requirement is distinguishing normal and defective images.
+
+The current deployment-oriented models are therefore divided into:
+
+### Tier 1
+
+High-performing models suitable for the main demonstration:
+
+```text
+bottle
+tile
+leather
+metal_nut
+```
+
+### Tier 2
+
+Models retained for experimentation but with lower performance:
+
+```text
+wood
+cable
+```
+
+### Not selected
+
+Models requiring further experimentation:
+
+```text
+screw
+transistor
+capsule
+```
+
+A high F1-score alone is not sufficient for selecting a model because F1 depends on the chosen threshold. AUROC provides a broader view of the model's ability to separate normal and anomalous samples.
+
+---
+
+# 13. Threshold Calibration
+
+The raw anomaly score does not automatically determine whether an image is defective.
+
+A decision threshold is therefore calibrated for each category.
+
+Conceptually:
+
+```text
+              Anomaly Score
+                   │
+      ┌────────────┼────────────┐
+      │            │            │
+     GOOD       THRESHOLD      DEFECT
+```
+
+Different material categories can have different score distributions.
+
+Therefore, a single global threshold is not necessarily appropriate.
+
+The project maintains category-specific thresholds in:
+
+```text
+models/registry.json
+```
+
+Example:
+
+```json
+{
+    "metal_nut": {
+        "checkpoint": "models/metal_nut/model.ckpt",
+        "threshold": 0.5225
+    }
+}
+```
+
+This allows the web application to automatically select the appropriate checkpoint and threshold when a category is selected.
+
+---
+
+# 14. Web Application
+
+The primary user interface is a Flask web application.
+
+```text
+User
+ │
+ ▼
+Select MVTec Category
+ │
+ ▼
+Upload Image
+ │
+ ▼
+Flask API
+ │
+ ▼
+Load category checkpoint
+ │
+ ▼
+EfficientAD inference
+ │
+ ├───────────────┐
+ ▼               ▼
+Anomaly Score   Anomaly Map
+ │               │
+ ▼               ▼
+Threshold       Heatmap
+comparison      generation
+ │               │
+ └───────┬───────┘
+         ▼
+    Web Interface
+         │
+    ┌────┴─────┐
+    ▼          ▼
+ GOOD/DEFECT  Heatmap
+```
+
+Run the application:
+
+```bash
+PYTORCH_ENABLE_MPS_FALLBACK=1 python src/app.py
+```
+
+Then open:
+
+```text
+http://127.0.0.1:5000
+```
+
+### Application workflow
+
+1. Select the material category.
+2. Upload an inspection image.
+3. Press **Detect**.
+4. The selected model performs inference.
+5. The anomaly score is calculated.
+6. The score is compared against the category-specific threshold.
+7. The application displays:
+   - GOOD / DEFECT
+   - anomaly score
+   - threshold
+   - anomaly heatmap
+
+---
+
+# 15. API
+
+The Flask application also exposes API endpoints.
+
+### List available categories
+
+```bash
+curl http://127.0.0.1:5000/categories
+```
+
+### Run prediction
+
+```bash
+curl -X POST \
+  -F "category=metal_nut" \
+  -F "file=@datasets/MVTecAD/metal_nut/test/bent/000.png" \
+  http://127.0.0.1:5000/predict
+```
+
+Example response:
+
+```json
+{
+  "category": "metal_nut",
+  "tier": 1,
+  "score": 0.5454,
+  "threshold": 0.5225,
+  "is_defect": true,
+  "result": "DEFECT",
+  "heatmap": "<base64 PNG>"
+}
+```
+
+---
+
+# 16. Project Structure
 
 ```text
 industrial-defect-detection/
 │
 ├── src/
-│   ├── app.py                  # Flask web app (upload & detect) — PRIMARY
+│   ├── app.py
+│   │   └── Flask web application
+│   │
 │   ├── templates/
-│   │   └── index.html          # Web UI
-│   ├── calibrate_thresholds.py
-│   ├── download_dataset.py
-│   ├── evaluate.py
+│   │   └── index.html
+│   │       └── Web interface
+│   │
 │   ├── train.py
+│   │   └── Train EfficientAD for one category
+│   │
 │   ├── train_all.py
+│   │   └── Train multiple MVTec categories
+│   │
+│   ├── evaluate.py
+│   │   └── Evaluate trained models
+│   │
+│   ├── calibrate_thresholds.py
+│   │   └── Generate category-specific thresholds
+│   │
 │   ├── predict_image.py
-│   ├── capture.py              # LEGACY: webcam frame capture
-│   ├── camera_test.py          # LEGACY: webcam permission test
-│   └── realtime.py             # LEGACY: real-time webcam detection
+│   │   └── Single-image CLI inference
+│   │
+│   ├── download_dataset.py
+│   │   └── Download MVTec AD
+│   │
+│   ├── capture.py
+│   │   └── Legacy webcam frame capture
+│   │
+│   ├── camera_test.py
+│   │   └── Legacy camera testing
+│   │
+│   └── realtime.py
+│       └── Legacy real-time detection
 │
 ├── models/
-│   ├── registry.json           # per-class checkpoint + threshold
+│   ├── registry.json
+│   │   └── Checkpoint paths, thresholds and model metadata
+│   │
 │   └── <category>/
-│       └── model.ckpt          # trained EfficientAD model
+│       └── model.ckpt
 │
-├── metrics/                    # per-class evaluation metrics
-├── datasets/                   # local only, not committed
-├── results/                    # local training logs/history, not committed
+├── metrics/
+│   └── <category>.json
+│       └── Evaluation results
 │
-├── .gitignore
+├── datasets/
+│   └── MVTecAD/
+│       └── Local dataset — not committed
+│
+├── results/
+│   └── Training outputs — not committed
+│
 ├── requirements.txt
+├── .gitignore
 └── README.md
 ```
 
-## Important: what is and isn't included
+---
 
-### Included in Git
+# 17. Installation
 
-- Python source code in `src/`
-- `README.md`
-- `requirements.txt`
-- `.gitignore`
-- Trained EfficientAD checkpoints under `models/<category>/model.ckpt`
-- Per-class metrics in `metrics/`
-- The model registry `models/registry.json`
+The project was developed and tested on **Apple Silicon macOS**.
 
-### Not included in Git
+Recommended environment:
 
-- MVTec AD dataset
-- `.venv`
-- Generated `results/`
-- macOS `.DS_Store` files
-- Python cache files
+```text
+Python 3.11
+PyTorch
+Anomalib 2.6.2
+OpenCV
+Flask
+Git LFS
+```
 
-The MVTec dataset is downloaded locally by the setup script instead of being stored in this repository.
+---
 
-## Requirements
+## 17.1 Install Git LFS
 
-This project was developed/tested on Apple Silicon macOS with Python 3.11.
+The trained checkpoints are binary files and are therefore stored using Git LFS.
 
-You need:
-
-- Python 3.11
-- Git
-- Git LFS
-- A webcam (only for the legacy real-time scripts)
-
-Git LFS is recommended for the `.ckpt` model files because model checkpoints are binary files and may be too large for normal Git.
-
-## 1. Install Git LFS (BEFORE cloning)
-
-The model checkpoints (~432 MB total) are stored with Git LFS.
-Install LFS **before** cloning, otherwise you get small pointer files
-instead of the real checkpoints and the app will fail to load them.
-
-On macOS with Homebrew:
+Install Git LFS before cloning:
 
 ```bash
 brew install git-lfs
 git lfs install
 ```
 
-## 2. Clone the repository
+---
+
+## 17.2 Clone the Repository
 
 ```bash
 git clone https://github.com/giri5hsharma/Industrial-Material-Testing.git
 cd Industrial-Material-Testing
 ```
 
-Verify the checkpoints downloaded correctly — each should be ~72 MB:
+Verify that the checkpoints were downloaded:
 
 ```bash
 ls -lh models/*/model.ckpt
 ```
 
-If you already cloned without Git LFS and see ~130-byte files instead,
-recover with:
+If the checkpoint files are only around ~100 bytes, they are probably Git LFS pointer files.
+
+Run:
 
 ```bash
 git lfs install
 git lfs pull
 ```
 
-## 3. Create the Python environment
+---
+
+# 18. Create Virtual Environment
+
+The project uses Python 3.11.
 
 ```bash
 python3.11 -m venv .venv
+```
+
+Activate it:
+
+```bash
 source .venv/bin/activate
 ```
 
-## 4. Install dependencies
+---
+
+# 19. Install Dependencies
+
+Upgrade pip:
 
 ```bash
 python -m pip install --upgrade pip
+```
+
+Install dependencies:
+
+```bash
 pip install -r requirements.txt
 ```
 
@@ -142,263 +893,239 @@ Expected:
 2.6.2
 ```
 
-Verify Apple MPS:
+Check Apple MPS:
 
 ```bash
 python -c "import torch; print('MPS available:', torch.backends.mps.is_available())"
 ```
 
-On a compatible Apple Silicon machine this should print:
+Expected on a compatible Apple Silicon system:
 
 ```text
 MPS available: True
 ```
 
-## 5. Download MVTec AD
+---
 
-The dataset is intentionally not stored in Git.
+# 20. Download MVTec AD
 
-**Not needed to run the web app** — the trained checkpoints in `models/`
-are enough. Download the dataset only if you want to retrain, evaluate,
-or recalibrate thresholds.
+The dataset is intentionally excluded from Git.
 
-Run:
+Download it using:
 
 ```bash
 python src/download_dataset.py
 ```
 
-The dataset will be created under:
+The resulting structure is:
 
 ```text
-datasets/MVTecAD/
+datasets/
+└── MVTecAD/
+    ├── bottle/
+    ├── cable/
+    ├── capsule/
+    ├── leather/
+    ├── metal_nut/
+    ├── screw/
+    ├── tile/
+    ├── transistor/
+    └── wood/
 ```
 
-Each category follows the layout:
+The dataset is only required if you want to:
 
-```text
-<category>/
-├── train/
-│   └── good/
-└── test/
-    ├── good/
-    └── <defect types>/
-```
+- retrain the models
+- evaluate models
+- recalibrate thresholds
+- reproduce the experiments
 
-The training split contains only defect-free samples. The test split
-contains good samples and multiple defect types.
+The web application can run using the trained checkpoints without the full dataset.
 
-## 6. Train EfficientAD
+---
 
-To train all configured categories:
+# 21. Training
+
+### Train all configured categories
 
 ```bash
 PYTORCH_ENABLE_MPS_FALLBACK=1 python src/train_all.py --epochs 20
 ```
 
-To train a single category:
+### Train a single category
 
 ```bash
-PYTORCH_ENABLE_MPS_FALLBACK=1 python src/train_all.py --category metal_nut --epochs 20
+PYTORCH_ENABLE_MPS_FALLBACK=1 python src/train_all.py \
+  --category metal_nut \
+  --epochs 20
 ```
 
-Training logs are written under `results/` (ignored by Git).
+Training outputs are stored under:
+
+```text
+results/
+```
+
 The final checkpoint is copied to:
 
 ```text
 models/<category>/model.ckpt
 ```
 
-and evaluation metrics are written to:
+Evaluation metrics are written to:
 
 ```text
 metrics/<category>.json
 ```
 
-After training, regenerate the per-class thresholds:
+---
+
+# 22. Recalibrate Thresholds
+
+After training:
 
 ```bash
 python src/calibrate_thresholds.py
 ```
 
-## 7. Web app: upload & detect (primary)
+This generates category-specific anomaly thresholds.
 
-The primary way to use this project is the Flask web app: upload an
-image, select the MVTec AD class, and get a GOOD / DEFECT verdict plus
-an anomaly heatmap.
-
-Run:
-
-```bash
-PYTORCH_ENABLE_MPS_FALLBACK=1 python src/app.py
-```
-
-Then open:
+The thresholds are stored in:
 
 ```text
-http://127.0.0.1:5000
+models/registry.json
 ```
 
-Workflow:
+---
 
-1. Select the class using the radio buttons.
-2. Drag & drop an image (or click to browse).
-3. Press **Detect**.
-4. The UI shows the verdict, the anomaly score, the calibrated threshold,
-   and a heatmap overlay highlighting the most anomalous regions.
+# 23. Single Image Inference
 
-The class selector lists only the well-performing classes kept after the
-metrics review. Tier-1 classes are marked "production-grade";
-tier-2 classes are marked "experimental".
-
-The API endpoints are also usable directly:
-
-```bash
-# list available classes
-curl http://127.0.0.1:5000/categories
-
-# predict
-curl -X POST \
-  -F "category=metal_nut" \
-  -F "file=@datasets/MVTecAD/metal_nut/test/bent/000.png" \
-  http://127.0.0.1:5000/predict
-```
-
-Response:
-
-```json
-{
-  "category": "metal_nut",
-  "tier": 1,
-  "score": 0.5454,
-  "threshold": 0.5225,
-  "is_defect": true,
-  "result": "DEFECT",
-  "heatmap": "<base64 PNG>"
-}
-```
-
-Note: very faint scratches can still score below the calibrated
-threshold on `metal_nut` and `wood`.
-
-## 8. Single-image inference (CLI)
-
-`predict_image.py` runs one image through a checkpoint without the web UI.
-
-Set:
+For command-line inference, configure:
 
 ```python
 MODEL_PATH = "models/metal_nut/model.ckpt"
-```
-
-and choose the test image:
-
-```python
 IMAGE_PATH = "datasets/MVTecAD/metal_nut/test/scratch/000.png"
 ```
 
-Then run:
+Then:
 
 ```bash
 python src/predict_image.py
 ```
 
-This prints the anomaly score and predicted label.
+The script outputs the anomaly score and predicted result.
 
-## 9. Model selection
+---
 
-All MVTec AD categories were trained with the same EfficientAD-small,
-20-epoch setup. The following metrics were collected:
+# 24. Retraining a Specific Category
 
-| Category | image_AUROC | image_F1 | Decision |
-|---|---|---|---|
-| bottle | 1.000 | 0.992 | KEEP tier-1 |
-| tile | 0.999 | 0.982 | KEEP tier-1 |
-| leather | 0.990 | 0.968 | KEEP tier-1 |
-| metal_nut | 0.973 | 0.957 | KEEP tier-1 |
-| wood | 0.949 | 0.934 | KEEP tier-2 (experimental) |
-| cable | 0.928 | 0.863 | KEEP tier-2 (experimental) |
-| screw | 0.862 | 0.877 | DROP |
-| transistor | 0.778 | 0.667 | DROP |
-| capsule | 0.688 | 0.911 | DROP |
-
-Primary selection metric is **image_AUROC**: it measures how well the
-model separates good images from defective images, which is exactly
-what the GOOD/DEFECT verdict needs.
-
-Dropped classes were removed from `models/`. They can be retrained with
-more epochs or a different model if needed:
+For example:
 
 ```bash
-python src/train_all.py --category screw --epochs 40 --force
+PYTORCH_ENABLE_MPS_FALLBACK=1 python src/train_all.py \
+  --category screw \
+  --epochs 40 \
+  --force
 ```
 
-## 10. Model limitations
+The `--force` option allows an existing model to be retrained.
 
-This repository currently serves EfficientAD models trained on the
-**MVTec AD** categories listed above.
+This can be useful for categories with poor initial performance.
 
-It should therefore be treated as a demonstration of industrial anomaly detection, not as a universal defect detector for arbitrary materials.
+---
 
-For a real deployment:
+# 25. Why Some Categories Perform Better
 
-1. Collect normal images using the actual inspection camera.
-2. Match camera distance, lighting, background, and object positioning.
-3. Retrain or adapt the anomaly detector using the target industrial component.
-4. Validate thresholds on representative production samples.
+MVTec categories have very different visual characteristics.
 
-## 11. Re-training from scratch
+For example, some objects have:
 
-To train all categories:
+- consistent geometry
+- simple backgrounds
+- clearly defined defect patterns
 
-```bash
-python src/download_dataset.py
-PYTORCH_ENABLE_MPS_FALLBACK=1 python src/train_all.py --epochs 20
-```
+while others have:
 
-To train a single category:
+- complex textures
+- subtle defects
+- high intra-class variation
+- difficult boundaries between normal and anomalous regions
 
-```bash
-python src/download_dataset.py
-PYTORCH_ENABLE_MPS_FALLBACK=1 python src/train_all.py --category metal_nut --epochs 20
-```
+Therefore, the same EfficientAD configuration does not necessarily produce the same performance for every category.
 
-The generated checkpoints appear under `models/<category>/model.ckpt`
-and evaluation metrics are written to `metrics/<category>.json`.
+This is why model evaluation and category-specific threshold calibration are important.
 
-After training, regenerate the calibrated thresholds:
+---
 
-```bash
-python src/calibrate_thresholds.py
-```
+# 26. Limitations
 
-and update `models/registry.json` if you want to add, drop, or re-tier
-classes.
+This project is a demonstration of industrial anomaly detection using MVTec AD.
 
-## 12. Legacy: real-time webcam detection (backup)
+The trained models should **not** be interpreted as universal industrial defect detectors.
 
-> **Legacy.** These scripts predate the upload-based web app and are
-> kept as a backup for physical-inspection demos. They are not used by
-> the web app and are no longer actively maintained. The webcam scripts
-> are also hardcoded to the old single `metal_nut` workflow.
-
-### Test the webcam
-
-Before running anomaly detection, verify camera access:
-
-```bash
-python src/camera_test.py
-```
-
-macOS may ask for camera permission. If necessary, enable camera access under:
+A model trained on:
 
 ```text
-System Settings
-→ Privacy & Security
-→ Camera
+MVTec metal_nut
 ```
 
-### Real-time detection
+does not automatically generalize to arbitrary:
+
+```text
+industrial nuts
+mechanical components
+metal surfaces
+factory products
+```
+
+Real-world deployment would require:
+
+1. Collecting images using the actual inspection camera.
+2. Matching production lighting.
+3. Matching camera distance and viewpoint.
+4. Controlling object positioning.
+5. Collecting representative GOOD samples.
+6. Validating the anomaly-score distribution.
+7. Calibrating thresholds using production data.
+8. Testing false positives and false negatives.
+9. Retraining/adapting the model for the target component.
+
+---
+
+# 27. Legacy Real-Time Webcam Detection
+
+The repository also contains an older OpenCV-based webcam pipeline.
+
+These scripts are kept for backup/demo purposes and are **not the primary application**.
+
+Relevant files:
+
+```text
+src/capture.py
+src/camera_test.py
+src/realtime.py
+```
+
+The real-time implementation includes:
+
+- ROI-based inspection
+- camera-specific calibration
+- frame skipping
+- temporal filtering
+- anomaly detection using the metal_nut model
+
+---
+
+## Webcam Controls
+
+| Key | Action |
+|---|---|
+| `D` | Toggle anomaly detection |
+| `C` | Calibrate using a known-good object |
+| `S` | Save current frame |
+| `Q` | Quit |
+
+Run:
 
 ```bash
 PYTORCH_ENABLE_MPS_FALLBACK=1 python src/realtime.py \
@@ -406,31 +1133,7 @@ PYTORCH_ENABLE_MPS_FALLBACK=1 python src/realtime.py \
   --skip 2
 ```
 
-#### Controls
-
-| Key | Action |
-|---|---|
-| `D` | Toggle anomaly detection ON/OFF |
-| `C` | Calibrate with a known-good object |
-| `S` | Save the current camera frame |
-| `Q` | Quit |
-
-#### Recommended workflow
-
-1. Start the application.
-2. Press `D` to enable detection.
-3. Place a known-good metal nut inside the green inspection ROI.
-4. Press `C`.
-5. Keep the object and camera stable during calibration.
-6. After calibration, test good and defective samples.
-
-The calibration step measures the anomaly-score distribution produced by the actual camera/setup and creates a local detection threshold.
-
-The real-time application also requires multiple anomalous frames before declaring a defect, reducing one-frame false positives.
-
-### Changing the inspection area
-
-The real-time script contains the ROI settings:
+The ROI is configured using:
 
 ```python
 ROI_X = 170
@@ -439,28 +1142,161 @@ ROI_W = 300
 ROI_H = 300
 ```
 
-Adjust these values to place the green inspection region around the object.
+Only the selected ROI is passed to the anomaly detector.
 
-Only this ROI is sent to EfficientAD.
-
-### Performance
-
-For higher camera/display FPS, the application supports frame skipping:
-
-```bash
---skip 2
-```
-
-means inference is performed on every second frame.
-
-For a lighter inference load:
+Frame skipping can be increased to reduce inference load:
 
 ```bash
 --skip 3
 ```
 
-The camera stream remains live while inference runs less frequently.
+---
 
-## License
+# 28. Camera Calibration
 
-Add your chosen project license here, for example MIT, before publishing if you intend the repository to be open source.
+The legacy webcam pipeline can calibrate the anomaly-score distribution using a known-good object.
+
+The workflow is:
+
+```text
+Known-good object
+       │
+       ▼
+Camera
+       │
+       ▼
+Inspection ROI
+       │
+       ▼
+EfficientAD
+       │
+       ▼
+Normal anomaly-score distribution
+       │
+       ▼
+Camera-specific threshold
+```
+
+This is useful because the same object can produce different anomaly scores under different:
+
+- cameras
+- lighting conditions
+- distances
+- backgrounds
+- viewpoints
+
+The web application instead uses the category-specific calibrated thresholds stored in `registry.json`.
+
+---
+
+# 29. Reproducibility
+
+To reproduce the main experiment:
+
+```bash
+git clone https://github.com/giri5hsharma/Industrial-Material-Testing.git
+cd Industrial-Material-Testing
+
+python3.11 -m venv .venv
+source .venv/bin/activate
+
+pip install -r requirements.txt
+
+python src/download_dataset.py
+
+PYTORCH_ENABLE_MPS_FALLBACK=1 python src/train_all.py --epochs 20
+
+python src/calibrate_thresholds.py
+```
+
+Then run:
+
+```bash
+PYTORCH_ENABLE_MPS_FALLBACK=1 python src/app.py
+```
+
+Open:
+
+```text
+http://127.0.0.1:5000
+```
+
+---
+
+# 30. Key Concepts Demonstrated
+
+This project demonstrates several important concepts in modern computer vision and anomaly detection:
+
+- Industrial anomaly detection
+- Unsupervised / one-class learning
+- EfficientAD
+- Teacher–Student knowledge distillation
+- Feature-space anomaly detection
+- Autoencoder-based reconstruction
+- Image-level anomaly detection
+- Pixel-level anomaly localization
+- Anomaly maps
+- Threshold calibration
+- AUROC
+- F1-score
+- Precision and Recall
+- MVTec AD
+- PyTorch
+- Anomalib
+- OpenCV
+- Flask
+- Apple Silicon MPS acceleration
+
+---
+
+# 31. Summary
+
+The overall system can be summarized as:
+
+```text
+                  MVTec AD
+                     │
+                     ▼
+              Normal Training
+                     │
+                     ▼
+               EfficientAD
+                     │
+          ┌──────────┴──────────┐
+          │                     │
+          ▼                     ▼
+    Teacher–Student       Autoencoding /
+     Distillation         Reconstruction
+          │                     │
+          ▼                     ▼
+    Local anomalies       Global anomalies
+          │                     │
+          └──────────┬──────────┘
+                     ▼
+               Anomaly Map
+                     │
+                     ▼
+              Anomaly Score
+                     │
+                     ▼
+          Category Threshold
+                     │
+             ┌───────┴───────┐
+             ▼               ▼
+           GOOD            DEFECT
+                             │
+                             ▼
+                     Heatmap / Localization
+```
+
+The primary objective is therefore not simply to classify images as defective.
+
+The system attempts to answer **two questions simultaneously**:
+
+> **Is this object anomalous?**
+
+and
+
+> **Where is the anomaly located?**
+
+This combination of **image-level detection** and **pixel-level localization**, using both **global reconstruction information** and **local Teacher–Student feature discrepancies**, forms the core of the project.
