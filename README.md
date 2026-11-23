@@ -1,3 +1,5 @@
+# off campus code ZK6H3F
+
 # Industrial Material Defect Detection
 
 An industrial anomaly detection system built using **EfficientAD**, **Anomalib**, **PyTorch**, **MVTec AD**, and **OpenCV**.
